@@ -22,7 +22,6 @@ use std::time::Instant;
 use bollard::Docker;
 use bollard::container::ListContainersOptions;
 use bollard::container::RemoveContainerOptions;
-use clap::Parser;
 use redis::Commands;
 use serde::Deserialize;
 use serde::Serialize;
@@ -103,8 +102,7 @@ fn find_specific_dir(dir: &str, suit: PathBuf) -> Result<DirEntry> {
     ))
 }
 
-pub fn get_files(suit: PathBuf) -> Result<Vec<walkdir::Result<DirEntry>>> {
-    let args = SqlLogicTestArgs::parse();
+pub fn get_files(suit: PathBuf, args: &SqlLogicTestArgs) -> Result<Vec<walkdir::Result<DirEntry>>> {
     let mut files = vec![];
 
     let dirs = match args.dir {

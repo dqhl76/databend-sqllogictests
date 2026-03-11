@@ -103,10 +103,6 @@ impl sqllogictest::AsyncDB for Databend {
 }
 
 pub async fn run(args: SqlLogicTestArgs) -> Result<()> {
-    println!(
-        "Run sqllogictests with args: {}",
-        std::env::args().skip(1).collect::<Vec<String>>().join(" ")
-    );
     let handlers = match &args.handlers {
         Some(hs) => hs.iter().map(|s| s.as_str()).collect(),
         None => vec![HANDLER_MYSQL, HANDLER_HTTP],
@@ -135,11 +131,14 @@ pub async fn run(args: SqlLogicTestArgs) -> Result<()> {
                     )
                     .await?;
                 }
-                run_ttc_client(args.clone(), ClientType::Ttc {
-                    image: handler.to_string(),
-                    port: TTC_PORT_START,
-                    query_result_format: QueryResultFormat::Json,
-                })
+                run_ttc_client(
+                    args.clone(),
+                    ClientType::Ttc {
+                        image: handler.to_string(),
+                        port: TTC_PORT_START,
+                        query_result_format: QueryResultFormat::Json,
+                    },
+                )
                 .await?;
             }
             _ => {
@@ -171,7 +170,7 @@ async fn run_hybrid_client(
     args: SqlLogicTestArgs,
     cs: &mut Vec<ContainerAsync<GenericImage>>,
 ) -> Result<()> {
-    println!("Hybird client starts to run with: {:?}", args);
+    println!("Hybrid client starts to run with: {:?}", args);
 
     for (c, _) in HYBRID_CONFIGS.iter() {
         match c.as_ref() {
@@ -271,7 +270,7 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
         // Get a suit and find all slt files in the suit
         let suit = suit.unwrap().path();
         // Parse the suit and find all slt files
-        let suit_files = get_files(suit)?;
+        let suit_files = get_files(suit, &args)?;
         for suit_file in suit_files.into_iter() {
             let file_name = suit_file
                 .as_ref()
@@ -345,9 +344,9 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
         for file in files {
             let client_type = client_type.clone();
             let args = args.clone();
-            tasks.push(async move {
-                run_file_async(&client_type, &args, file.unwrap().path()).await
-            });
+            tasks.push(
+                async move { run_file_async(&client_type, &args, file.unwrap().path()).await },
+            );
         }
         // Run all tasks parallel
         run_parallel_async(tasks, num_of_tests, args.parallel, args.no_fail_fast).await?;
@@ -496,8 +495,8 @@ where
     D: sqllogictest::AsyncDB<ColumnType = ColumnType>,
     M: sqllogictest::MakeConnection<Conn = D>,
 {
-    let records = sqllogictest::parse::<ColumnType>("query T\nSELECT LAST_QUERY_ID()\n----\n")
-        .ok()?;
+    let records =
+        sqllogictest::parse::<ColumnType>("query T\nSELECT LAST_QUERY_ID()\n----\n").ok()?;
     let record = records.into_iter().next()?;
     if let sqllogictest::RecordOutput::Query { rows, .. } = runner.apply_record(record).await {
         rows.first().and_then(|r| r.first()).cloned()
