@@ -17,7 +17,6 @@ use std::future::Future;
 use std::path::Path;
 use std::time::Instant;
 
-use clap::Parser;
 use futures_util::StreamExt;
 use futures_util::stream;
 use rand::Rng;
@@ -103,15 +102,11 @@ impl sqllogictest::AsyncDB for Databend {
     }
 }
 
-#[tokio::main]
-pub async fn run_async() -> Result<()> {
-    env_logger::init();
-
+pub async fn run(args: SqlLogicTestArgs) -> Result<()> {
     println!(
         "Run sqllogictests with args: {}",
         std::env::args().skip(1).collect::<Vec<String>>().join(" ")
     );
-    let args = SqlLogicTestArgs::parse();
     let handlers = match &args.handlers {
         Some(hs) => hs.iter().map(|s| s.as_str()).collect(),
         None => vec![HANDLER_MYSQL, HANDLER_HTTP],
@@ -154,14 +149,6 @@ pub async fn run_async() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Entry point callable from both the binary and the thin wrapper.
-pub fn run() {
-    if let Err(e) = run_async() {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
 }
 async fn run_mysql_client(args: SqlLogicTestArgs) -> Result<()> {
     println!("MySQL client starts to run with: {:?}", args);
@@ -218,9 +205,12 @@ async fn run_hybrid_client(
 
 // Create new databend with client type
 #[async_recursion::async_recursion(#[recursive::recursive])]
-async fn create_databend(client_type: &ClientType, filename: &str) -> Result<Databend> {
+async fn create_databend(
+    client_type: &ClientType,
+    filename: &str,
+    args: &SqlLogicTestArgs,
+) -> Result<Databend> {
     let mut client: Client;
-    let args = SqlLogicTestArgs::parse();
     match client_type {
         ClientType::MySQL => {
             let mut mysql_client = MySQLClient::create(&args.database).await?;
@@ -252,7 +242,7 @@ async fn create_databend(client_type: &ClientType, filename: &str) -> Result<Dat
                 acc += s;
 
                 if acc >= r {
-                    return create_databend(t.as_ref(), filename).await;
+                    return create_databend(t.as_ref(), filename, args).await;
                 }
             }
             unreachable!()
@@ -276,7 +266,7 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
     let start = Instant::now();
     // Walk each suit dir and read all files in it
     // After get a slt file, set the file name to databend
-    let suits = std::fs::read_dir(args.suites).unwrap();
+    let suits = std::fs::read_dir(&args.suites).unwrap();
     for suit in suits {
         // Get a suit and find all slt files in the suit
         let suit = suit.unwrap().path();
@@ -337,7 +327,7 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
             let col_separator = " ";
             let validator = default_validator;
             let mut runner =
-                Runner::new(|| async { create_databend(&client_type, &file_name).await });
+                Runner::new(|| async { create_databend(&client_type, &file_name, &args).await });
             // todo: The behavior of normalizer for multi line string is incorrect
             runner
                 .update_test_file(
@@ -354,12 +344,13 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
         let mut tasks = Vec::with_capacity(files.len());
         for file in files {
             let client_type = client_type.clone();
+            let args = args.clone();
             tasks.push(async move {
-                run_file_async(&client_type, args.bench, file.unwrap().path()).await
+                run_file_async(&client_type, &args, file.unwrap().path()).await
             });
         }
         // Run all tasks parallel
-        run_parallel_async(tasks, num_of_tests).await?;
+        run_parallel_async(tasks, num_of_tests, args.parallel, args.no_fail_fast).await?;
     }
     let duration = start.elapsed();
     println!(
@@ -402,11 +393,11 @@ type ErrorWithQueryId = (TestError, Option<String>);
 async fn run_parallel_async(
     tasks: Vec<impl Future<Output = std::result::Result<Vec<ErrorWithQueryId>, ErrorWithQueryId>>>,
     num_of_tests: usize,
+    parallel: usize,
+    no_fail_fast: bool,
 ) -> Result<()> {
-    let args = SqlLogicTestArgs::parse();
-    let jobs = tasks.len().clamp(1, args.parallel);
+    let jobs = tasks.len().clamp(1, parallel);
     let tasks = stream::iter(tasks).buffer_unordered(jobs);
-    let no_fail_fast = args.no_fail_fast;
     if !no_fail_fast {
         let errors: Vec<ErrorWithQueryId> = tasks
             .filter_map(|result| async { result.err() })
@@ -428,17 +419,18 @@ async fn run_parallel_async(
 
 async fn run_file_async(
     client_type: &ClientType,
-    bench: bool,
+    args: &SqlLogicTestArgs,
     filename: impl AsRef<Path>,
 ) -> std::result::Result<Vec<(TestError, Option<String>)>, (TestError, Option<String>)> {
     let start = Instant::now();
+    let bench = args.bench;
+    let no_fail_fast = args.no_fail_fast;
 
     let mut error_records: Vec<(TestError, Option<String>)> = vec![];
-    let no_fail_fast = SqlLogicTestArgs::parse().no_fail_fast;
     let records = parse_file(&filename).unwrap();
     let filename = filename.as_ref().to_str().unwrap();
 
-    let mut runner = Runner::new(|| async { create_databend(client_type, filename).await });
+    let mut runner = Runner::new(|| async { create_databend(client_type, filename, args).await });
     for record in records.into_iter() {
         if let Record::Halt { .. } = record {
             break;
@@ -487,7 +479,7 @@ async fn run_file_async(
         false => "❌",
     };
 
-    if !SqlLogicTestArgs::parse().bench {
+    if !bench {
         println!(
             "Completed {} test for file: {} {} ({:?})",
             client_type,

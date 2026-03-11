@@ -19,4 +19,5 @@ pub mod util;
 
 mod runner;
 
+pub use arg::SqlLogicTestArgs;
 pub use runner::run;
