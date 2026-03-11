@@ -24,14 +24,25 @@ cookie = "0.18.1"
 env_logger = "0.11"
 flate2 = { version = "1.1.8", features = ["zlib-rs"] }
 futures-util = "0.3.24"
-mysql_async = { version = "0.34", default-features = false, features = ["native-tls-tls"] }
+mysql_async = { version = "0.34", default-features = false, features = [
+  "native-tls-tls",
+] }
 rand = { version = "0.8.5", features = ["small_rng"] }
 recursive = "0.1.1"
 redis = { version = "0.27.5", features = ["tokio-comp", "connection-manager"] }
 regex = "1.8.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "http2", "native-tls-vendored", "native-tls-alpn", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "http2",
+  "native-tls-vendored",
+  "native-tls-alpn",
+  "cookies",
+] }
 serde = { version = "1.0.164", features = ["derive"] }
-serde_json = { version = "1.0.85", default-features = false, features = ["preserve_order", "unbounded_depth"] }
+serde_json = { version = "1.0.85", default-features = false, features = [
+  "preserve_order",
+  "unbounded_depth",
+] }
 sqllogictest = "0.29.1"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11.5", features = ["mysql", "redis"] }
