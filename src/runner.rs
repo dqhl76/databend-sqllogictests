@@ -85,9 +85,6 @@ impl Databend {
     pub fn create(client: Client) -> Self {
         Databend { client }
     }
-    pub fn client_name(&self) -> &str {
-        self.client.engine_name()
-    }
 }
 
 #[async_trait::async_trait]
@@ -400,8 +397,10 @@ fn column_validator(loc: Location, actual: Vec<ColumnType>, expected: Vec<Column
         );
     }
 }
+type ErrorWithQueryId = (TestError, Option<String>);
+
 async fn run_parallel_async(
-    tasks: Vec<impl Future<Output = std::result::Result<Vec<TestError>, TestError>>>,
+    tasks: Vec<impl Future<Output = std::result::Result<Vec<ErrorWithQueryId>, ErrorWithQueryId>>>,
     num_of_tests: usize,
 ) -> Result<()> {
     let args = SqlLogicTestArgs::parse();
@@ -409,13 +408,13 @@ async fn run_parallel_async(
     let tasks = stream::iter(tasks).buffer_unordered(jobs);
     let no_fail_fast = args.no_fail_fast;
     if !no_fail_fast {
-        let errors = tasks
+        let errors: Vec<ErrorWithQueryId> = tasks
             .filter_map(|result| async { result.err() })
             .collect()
             .await;
         handle_error_records(errors, no_fail_fast, num_of_tests)
     } else {
-        let errors: Vec<Vec<TestError>> = tasks
+        let errors: Vec<Vec<ErrorWithQueryId>> = tasks
             .filter_map(|result| async { result.ok() })
             .collect()
             .await;
@@ -431,10 +430,10 @@ async fn run_file_async(
     client_type: &ClientType,
     bench: bool,
     filename: impl AsRef<Path>,
-) -> std::result::Result<Vec<TestError>, TestError> {
+) -> std::result::Result<Vec<(TestError, Option<String>)>, (TestError, Option<String>)> {
     let start = Instant::now();
 
-    let mut error_records = vec![];
+    let mut error_records: Vec<(TestError, Option<String>)> = vec![];
     let no_fail_fast = SqlLogicTestArgs::parse().no_fail_fast;
     let records = parse_file(&filename).unwrap();
     let filename = filename.as_ref().to_str().unwrap();
@@ -472,10 +471,12 @@ async fn run_file_async(
                     continue;
                 }
 
+                let query_id = fetch_last_query_id(&mut runner).await;
+
                 if no_fail_fast {
-                    error_records.push(e);
+                    error_records.push((e, query_id));
                 } else {
-                    return Err(e);
+                    return Err((e, query_id));
                 }
             }
             _ => {}
@@ -498,8 +499,23 @@ async fn run_file_async(
     Ok(error_records)
 }
 
+async fn fetch_last_query_id<D, M>(runner: &mut Runner<D, M>) -> Option<String>
+where
+    D: sqllogictest::AsyncDB<ColumnType = ColumnType>,
+    M: sqllogictest::MakeConnection<Conn = D>,
+{
+    let records = sqllogictest::parse::<ColumnType>("query T\nSELECT LAST_QUERY_ID()\n----\n")
+        .ok()?;
+    let record = records.into_iter().next()?;
+    if let sqllogictest::RecordOutput::Query { rows, .. } = runner.apply_record(record).await {
+        rows.first().and_then(|r| r.first()).cloned()
+    } else {
+        None
+    }
+}
+
 fn handle_error_records(
-    error_records: Vec<TestError>,
+    error_records: Vec<ErrorWithQueryId>,
     no_fail_fast: bool,
     num_of_tests: usize,
 ) -> Result<()> {
@@ -513,8 +529,9 @@ fn handle_error_records(
         error_records.len(),
         num_of_tests
     );
-    for (idx, error_record) in error_records.iter().enumerate() {
-        println!("{idx}: {}", error_record.display(true));
+    for (idx, (error, query_id)) in error_records.iter().enumerate() {
+        let query_id_str = query_id.as_deref().unwrap_or("unknown");
+        println!("{idx}: [query_id: {query_id_str}] {}", error.display(true));
     }
 
     Err(DSqlLogicTestError::SelfError(
