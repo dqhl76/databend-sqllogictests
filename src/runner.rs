@@ -25,7 +25,6 @@ use sqllogictest::Location;
 use sqllogictest::QueryExpect;
 use sqllogictest::Record;
 use sqllogictest::Runner;
-use sqllogictest::TestError;
 use sqllogictest::default_validator;
 use sqllogictest::parse_file;
 use testcontainers::ContainerAsync;
@@ -41,6 +40,8 @@ use crate::client::QueryResultFormat;
 use crate::client::TTCClient;
 use crate::error::DSqlLogicTestError;
 use crate::error::Result;
+use crate::report::ErrorRecord;
+use crate::report::RunReport;
 use crate::util::ColumnType;
 use crate::util::collect_lazy_dir;
 use crate::util::get_files;
@@ -303,6 +304,7 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
             files.push(suit_file);
         }
     }
+    let selected_files = files.len();
 
     if !args.bench {
         // lazy load test data
@@ -339,6 +341,13 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
                 .await
                 .unwrap();
         }
+        let duration = start.elapsed();
+        println!(
+            "Completed updating {} test file(s) in {} ms",
+            selected_files,
+            duration.as_millis()
+        );
+        return Ok(());
     } else {
         let mut tasks = Vec::with_capacity(files.len());
         for file in files {
@@ -348,15 +357,24 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
                 async move { run_file_async(&client_type, &args, file.unwrap().path()).await },
             );
         }
-        // Run all tasks parallel
-        run_parallel_async(tasks, num_of_tests, args.parallel, args.no_fail_fast).await?;
+        let error_records = run_parallel_async(tasks, args.parallel, args.no_fail_fast).await;
+        let report = RunReport::new(
+            client_type.to_string(),
+            selected_files,
+            num_of_tests,
+            num_of_tests > 0,
+            args.no_fail_fast,
+            start.elapsed(),
+            error_records,
+        );
+        println!("{}", report.render());
+
+        if report.has_failures() {
+            return Err(DSqlLogicTestError::SelfError(
+                "sqllogictest failed".to_string(),
+            ));
+        }
     }
-    let duration = start.elapsed();
-    println!(
-        "Run all tests[{}] using {} ms",
-        num_of_tests,
-        duration.as_millis()
-    );
 
     Ok(())
 }
@@ -387,32 +405,25 @@ fn column_validator(loc: Location, actual: Vec<ColumnType>, expected: Vec<Column
         );
     }
 }
-type ErrorWithQueryId = (TestError, Option<String>);
 
 async fn run_parallel_async(
-    tasks: Vec<impl Future<Output = std::result::Result<Vec<ErrorWithQueryId>, ErrorWithQueryId>>>,
-    num_of_tests: usize,
+    tasks: Vec<impl Future<Output = std::result::Result<Vec<ErrorRecord>, ErrorRecord>>>,
     parallel: usize,
     no_fail_fast: bool,
-) -> Result<()> {
+) -> Vec<ErrorRecord> {
     let jobs = tasks.len().clamp(1, parallel);
     let tasks = stream::iter(tasks).buffer_unordered(jobs);
     if !no_fail_fast {
-        let errors: Vec<ErrorWithQueryId> = tasks
+        tasks
             .filter_map(|result| async { result.err() })
             .collect()
-            .await;
-        handle_error_records(errors, no_fail_fast, num_of_tests)
+            .await
     } else {
-        let errors: Vec<Vec<ErrorWithQueryId>> = tasks
+        let errors: Vec<Vec<ErrorRecord>> = tasks
             .filter_map(|result| async { result.ok() })
             .collect()
             .await;
-        handle_error_records(
-            errors.into_iter().flatten().collect(),
-            no_fail_fast,
-            num_of_tests,
-        )
+        errors.into_iter().flatten().collect()
     }
 }
 
@@ -420,16 +431,15 @@ async fn run_file_async(
     client_type: &ClientType,
     args: &SqlLogicTestArgs,
     filename: impl AsRef<Path>,
-) -> std::result::Result<Vec<(TestError, Option<String>)>, (TestError, Option<String>)> {
-    let start = Instant::now();
+) -> std::result::Result<Vec<ErrorRecord>, ErrorRecord> {
     let bench = args.bench;
     let no_fail_fast = args.no_fail_fast;
 
-    let mut error_records: Vec<(TestError, Option<String>)> = vec![];
+    let mut error_records = vec![];
     let records = parse_file(&filename).unwrap();
-    let filename = filename.as_ref().to_str().unwrap();
+    let filename = filename.as_ref().to_string_lossy().into_owned();
 
-    let mut runner = Runner::new(|| async { create_databend(client_type, filename, args).await });
+    let mut runner = Runner::new(|| async { create_databend(client_type, &filename, args).await });
     for record in records.into_iter() {
         if let Record::Halt { .. } = record {
             break;
@@ -463,29 +473,16 @@ async fn run_file_async(
                 }
 
                 let query_id = fetch_last_query_id(&mut runner).await;
+                let error_record = ErrorRecord::new(filename.clone(), e, query_id);
 
                 if no_fail_fast {
-                    error_records.push((e, query_id));
+                    error_records.push(error_record);
                 } else {
-                    return Err((e, query_id));
+                    return Err(error_record);
                 }
             }
             _ => {}
         }
-    }
-    let run_file_status = match error_records.is_empty() {
-        true => "✅",
-        false => "❌",
-    };
-
-    if !bench {
-        println!(
-            "Completed {} test for file: {} {} ({:?})",
-            client_type,
-            filename,
-            run_file_status,
-            start.elapsed(),
-        );
     }
     Ok(error_records)
 }
@@ -503,29 +500,4 @@ where
     } else {
         None
     }
-}
-
-fn handle_error_records(
-    error_records: Vec<ErrorWithQueryId>,
-    no_fail_fast: bool,
-    num_of_tests: usize,
-) -> Result<()> {
-    if error_records.is_empty() {
-        return Ok(());
-    }
-
-    println!(
-        "Test finished, fail fast {}, {} out of {} records failed to run",
-        if no_fail_fast { "disabled" } else { "enabled" },
-        error_records.len(),
-        num_of_tests
-    );
-    for (idx, (error, query_id)) in error_records.iter().enumerate() {
-        let query_id_str = query_id.as_deref().unwrap_or("unknown");
-        println!("{idx}: [query_id: {query_id_str}] {}", error.display(true));
-    }
-
-    Err(DSqlLogicTestError::SelfError(
-        "sqllogictest failed".to_string(),
-    ))
 }

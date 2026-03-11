@@ -15,6 +15,7 @@
 pub mod arg;
 pub mod client;
 pub mod error;
+mod report;
 pub mod util;
 
 mod runner;
