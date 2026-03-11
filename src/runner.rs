@@ -38,6 +38,7 @@ use crate::client::HttpClient;
 use crate::client::MySQLClient;
 use crate::client::QueryResultFormat;
 use crate::client::TTCClient;
+use crate::diagnostics::capture_failure_diagnostics;
 use crate::error::DSqlLogicTestError;
 use crate::error::Result;
 use crate::report::ErrorRecord;
@@ -359,7 +360,6 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
         }
         let error_records = run_parallel_async(tasks, args.parallel, args.no_fail_fast).await;
         let report = RunReport::new(
-            client_type.to_string(),
             selected_files,
             num_of_tests,
             num_of_tests > 0,
@@ -472,8 +472,13 @@ async fn run_file_async(
                     continue;
                 }
 
-                let query_id = fetch_last_query_id(&mut runner).await;
-                let error_record = ErrorRecord::new(filename.clone(), e, query_id);
+                let diagnostics = capture_failure_diagnostics(&mut runner).await;
+                let error_record = ErrorRecord::new(
+                    filename.clone(),
+                    e,
+                    diagnostics.query_id,
+                    diagnostics.non_default_settings,
+                );
 
                 if no_fail_fast {
                     error_records.push(error_record);
@@ -485,19 +490,4 @@ async fn run_file_async(
         }
     }
     Ok(error_records)
-}
-
-async fn fetch_last_query_id<D, M>(runner: &mut Runner<D, M>) -> Option<String>
-where
-    D: sqllogictest::AsyncDB<ColumnType = ColumnType>,
-    M: sqllogictest::MakeConnection<Conn = D>,
-{
-    let records =
-        sqllogictest::parse::<ColumnType>("query T\nSELECT LAST_QUERY_ID()\n----\n").ok()?;
-    let record = records.into_iter().next()?;
-    if let sqllogictest::RecordOutput::Query { rows, .. } = runner.apply_record(record).await {
-        rows.first().and_then(|r| r.first()).cloned()
-    } else {
-        None
-    }
 }

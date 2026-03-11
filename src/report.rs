@@ -5,9 +5,34 @@ use std::time::Duration;
 use sqllogictest::TestError;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct NonDefaultSetting {
+    name: String,
+    value: String,
+    default_value: String,
+    level: String,
+}
+
+impl NonDefaultSetting {
+    pub(crate) fn new(
+        name: impl Into<String>,
+        value: impl Into<String>,
+        default_value: impl Into<String>,
+        level: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            default_value: default_value.into(),
+            level: level.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ErrorRecord {
     filename: String,
     query_id: Option<String>,
+    non_default_settings: Vec<NonDefaultSetting>,
     detail: String,
 }
 
@@ -16,10 +41,12 @@ impl ErrorRecord {
         filename: impl Into<String>,
         error: TestError,
         query_id: Option<String>,
+        non_default_settings: Vec<NonDefaultSetting>,
     ) -> Self {
         Self {
             filename: filename.into(),
             query_id,
+            non_default_settings,
             detail: error.display(true).to_string(),
         }
     }
@@ -33,7 +60,6 @@ enum RunStatus {
 }
 
 pub(crate) struct RunReport {
-    client_type: String,
     selected_files: usize,
     discovered_tests: usize,
     tests_were_run: bool,
@@ -45,7 +71,6 @@ pub(crate) struct RunReport {
 
 impl RunReport {
     pub(crate) fn new(
-        client_type: impl Into<String>,
         selected_files: usize,
         discovered_tests: usize,
         tests_were_run: bool,
@@ -61,7 +86,6 @@ impl RunReport {
             .len();
 
         Self {
-            client_type: client_type.into(),
             selected_files,
             discovered_tests,
             tests_were_run,
@@ -74,32 +98,14 @@ impl RunReport {
 
     pub(crate) fn render(&self) -> String {
         let mut output = String::new();
-        writeln!(&mut output, "Test report for {}", self.client_type).unwrap();
-        writeln!(&mut output, "Status: {}", self.status_label()).unwrap();
-        writeln!(&mut output, "Files selected: {}", self.selected_files).unwrap();
-        writeln!(&mut output, "Tests discovered: {}", self.discovered_tests).unwrap();
-        writeln!(&mut output, "Duration: {} ms", self.duration.as_millis()).unwrap();
+        writeln!(&mut output, "Summary: {}", self.summary_line()).unwrap();
 
         if self.status() == RunStatus::Failed {
-            writeln!(
-                &mut output,
-                "Fail fast: {}",
-                if self.no_fail_fast {
-                    "disabled"
-                } else {
-                    "enabled"
-                }
-            )
-            .unwrap();
-            writeln!(&mut output, "Failed files: {}", self.failed_files).unwrap();
-            writeln!(&mut output, "Failed records: {}", self.error_records.len()).unwrap();
             writeln!(&mut output).unwrap();
             writeln!(&mut output, "Failures:").unwrap();
             self.render_failures(&mut output);
         }
 
-        writeln!(&mut output).unwrap();
-        write!(&mut output, "Summary: {}", self.summary_line()).unwrap();
         output
     }
 
@@ -114,14 +120,6 @@ impl RunReport {
             RunStatus::Passed
         } else {
             RunStatus::Failed
-        }
-    }
-
-    fn status_label(&self) -> &'static str {
-        match self.status() {
-            RunStatus::NoTestsRun => "NO TESTS RUN",
-            RunStatus::Passed => "PASSED",
-            RunStatus::Failed => "FAILED",
         }
     }
 
@@ -172,6 +170,18 @@ impl RunReport {
             )
             .unwrap();
 
+            if !record.non_default_settings.is_empty() {
+                writeln!(output, "     non-default settings:").unwrap();
+                for setting in &record.non_default_settings {
+                    writeln!(
+                        output,
+                        "       {} = {} (default: {}, level: {})",
+                        setting.name, setting.value, setting.default_value, setting.level
+                    )
+                    .unwrap();
+                }
+            }
+
             for line in record.detail.lines() {
                 writeln!(output, "     {line}").unwrap();
             }
@@ -185,23 +195,22 @@ mod tests {
 
     #[test]
     fn render_report_for_no_tests_run() {
-        let report = RunReport::new("MySQL", 0, 0, false, true, Duration::from_millis(7), vec![]);
+        let report = RunReport::new(0, 0, false, true, Duration::from_millis(7), vec![]);
 
         let rendered = report.render();
 
-        assert!(rendered.contains("Status: NO TESTS RUN"));
-        assert!(rendered.contains("Summary: no tests were run."));
+        assert_eq!(rendered, "Summary: no tests were run.\n");
     }
 
     #[test]
     fn render_report_for_success() {
-        let report = RunReport::new("Http", 2, 5, true, true, Duration::from_millis(11), vec![]);
+        let report = RunReport::new(2, 5, true, true, Duration::from_millis(11), vec![]);
 
         let rendered = report.render();
 
-        assert!(rendered.contains("Status: PASSED"));
-        assert!(
-            rendered.contains("Summary: passed, 5 test(s) across 2 file(s) completed in 11 ms.")
+        assert_eq!(
+            rendered,
+            "Summary: passed, 5 test(s) across 2 file(s) completed in 11 ms.\n"
         );
         assert!(!rendered.contains("Failures:"));
     }
@@ -209,7 +218,6 @@ mod tests {
     #[test]
     fn render_report_groups_failures_by_file() {
         let report = RunReport::new(
-            "MySQL",
             3,
             8,
             true,
@@ -219,11 +227,16 @@ mod tests {
                 ErrorRecord {
                     filename: "b.test".to_string(),
                     query_id: None,
+                    non_default_settings: vec![],
                     detail: "second error".to_string(),
                 },
                 ErrorRecord {
                     filename: "a.test".to_string(),
                     query_id: Some("query-1".to_string()),
+                    non_default_settings: vec![
+                        NonDefaultSetting::new("max_threads", "8", "16", "SESSION"),
+                        NonDefaultSetting::new("timezone", "UTC", "SYSTEM", "SESSION"),
+                    ],
                     detail: "first error\nwith more detail".to_string(),
                 },
             ],
@@ -231,16 +244,15 @@ mod tests {
 
         let rendered = report.render();
 
-        assert!(rendered.contains("Status: FAILED"));
-        assert!(rendered.contains("Failed files: 2"));
         assert!(
             rendered.contains(
-                "[a.test]\n  1. query_id: query-1\n     first error\n     with more detail"
+                "[a.test]\n  1. query_id: query-1\n     non-default settings:\n       max_threads = 8 (default: 16, level: SESSION)\n       timezone = UTC (default: SYSTEM, level: SESSION)\n     first error\n     with more detail"
             )
         );
         assert!(rendered.contains("[b.test]\n  1. query_id: unknown\n     second error"));
         assert!(rendered.contains(
             "Summary: failed, 2 record(s) across 2 file(s); 8 discovered test(s); fail fast enabled; 19 ms."
         ));
+        assert!(rendered.contains("\nFailures:\n"));
     }
 }

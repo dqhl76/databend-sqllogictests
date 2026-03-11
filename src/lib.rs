@@ -14,6 +14,7 @@
 
 pub mod arg;
 pub mod client;
+mod diagnostics;
 pub mod error;
 mod report;
 pub mod util;
