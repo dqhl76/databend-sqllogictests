@@ -125,15 +125,15 @@ impl RunReport {
 
     fn summary_line(&self) -> String {
         match self.status() {
-            RunStatus::NoTestsRun => "no tests were run.".to_string(),
+            RunStatus::NoTestsRun => "⚠️  No tests were run.".to_string(),
             RunStatus::Passed => format!(
-                "passed, {} test(s) across {} file(s) completed in {} ms.",
+                "✅ Passed, {} test(s) across {} file(s) completed in {} ms.",
                 self.discovered_tests,
                 self.selected_files,
                 self.duration.as_millis()
             ),
             RunStatus::Failed => format!(
-                "failed, {} record(s) across {} file(s); {} discovered test(s); fail fast {}; {} ms.",
+                "❌ Failed, {} record(s) across {} file(s); {} discovered test(s); fail fast {}; {} ms.",
                 self.error_records.len(),
                 self.failed_files,
                 self.discovered_tests,
@@ -199,7 +199,7 @@ mod tests {
 
         let rendered = report.render();
 
-        assert_eq!(rendered, "Summary: no tests were run.\n");
+        assert_eq!(rendered, "Summary: ⚠️  No tests were run.\n");
     }
 
     #[test]
@@ -210,7 +210,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Summary: passed, 5 test(s) across 2 file(s) completed in 11 ms.\n"
+            "Summary: ✅ Passed, 5 test(s) across 2 file(s) completed in 11 ms.\n"
         );
         assert!(!rendered.contains("Failures:"));
     }
@@ -251,7 +251,7 @@ mod tests {
         );
         assert!(rendered.contains("[b.test]\n  1. query_id: unknown\n     second error"));
         assert!(rendered.contains(
-            "Summary: failed, 2 record(s) across 2 file(s); 8 discovered test(s); fail fast enabled; 19 ms."
+            "❌ Failed, 2 record(s) across 2 file(s); 8 discovered test(s); fail fast enabled; 19 ms."
         ));
         assert!(rendered.contains("\nFailures:\n"));
     }
