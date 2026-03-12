@@ -206,13 +206,35 @@ async fn run_hybrid_client(
     Ok(())
 }
 
+// Resolve Hybrid into a concrete client type before creating the connection.
+fn resolve_client_type(client_type: &ClientType) -> &ClientType {
+    match client_type {
+        ClientType::Hybird => {
+            let totals: usize = HYBRID_CONFIGS.iter().map(|(_, weight)| weight).sum();
+            let selected = rand::thread_rng().gen_range(0..totals);
+            let mut acc = 0;
+
+            for (client_type, weight) in HYBRID_CONFIGS.iter() {
+                acc += weight;
+
+                if selected < acc {
+                    return client_type.as_ref();
+                }
+            }
+
+            unreachable!()
+        }
+        _ => client_type,
+    }
+}
+
 // Create new databend with client type
-#[async_recursion::async_recursion(#[recursive::recursive])]
 async fn create_databend(
     client_type: &ClientType,
     filename: &str,
     args: &SqlLogicTestArgs,
 ) -> Result<Databend> {
+    let client_type = resolve_client_type(client_type);
     let mut client: Client;
     match client_type {
         ClientType::MySQL => {
@@ -235,21 +257,7 @@ async fn create_databend(
             client = Client::Ttc(TTCClient::create(image, &conn).await?);
         }
 
-        ClientType::Hybird => {
-            let ts = &HYBRID_CONFIGS;
-            let totals: usize = ts.iter().map(|t| t.1).sum();
-            let r = rand::thread_rng().gen_range(0..totals);
-
-            let mut acc = 0;
-            for (t, s) in ts.iter() {
-                acc += s;
-
-                if acc >= r {
-                    return create_databend(t.as_ref(), filename, args).await;
-                }
-            }
-            unreachable!()
-        }
+        ClientType::Hybird => unreachable!(),
     }
     if args.enable_sandbox {
         client.create_sandbox().await?;
