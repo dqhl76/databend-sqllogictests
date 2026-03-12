@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
+use std::time::Duration;
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -438,6 +439,7 @@ async fn run_file_async(
     let mut error_records = vec![];
     let records = parse_file(&filename).unwrap();
     let filename = filename.as_ref().to_string_lossy().into_owned();
+    let start = Instant::now();
 
     let mut runner = Runner::new(|| async { create_databend(client_type, &filename, args).await });
     for record in records.into_iter() {
@@ -483,11 +485,72 @@ async fn run_file_async(
                 if no_fail_fast {
                     error_records.push(error_record);
                 } else {
+                    println!(
+                        "{}",
+                        render_file_completion(client_type, &filename, start.elapsed(), false)
+                    );
                     return Err(error_record);
                 }
             }
             _ => {}
         }
     }
+    println!(
+        "{}",
+        render_file_completion(
+            client_type,
+            &filename,
+            start.elapsed(),
+            error_records.is_empty()
+        )
+    );
     Ok(error_records)
+}
+
+fn render_file_completion(
+    client_type: &ClientType,
+    filename: &str,
+    duration: Duration,
+    passed: bool,
+) -> String {
+    let status = if passed { "✅" } else { "❌" };
+    format!(
+        "Completed {} test for file: {} {} ({:?})",
+        client_type, filename, status, duration
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_file_completion_for_success() {
+        let rendered = render_file_completion(
+            &ClientType::Http,
+            "tests/sqllogictests/suites/tpcds/opt.test",
+            Duration::from_millis(517),
+            true,
+        );
+
+        assert_eq!(
+            rendered,
+            "Completed Http test for file: tests/sqllogictests/suites/tpcds/opt.test ✅ (517ms)"
+        );
+    }
+
+    #[test]
+    fn render_file_completion_for_failure() {
+        let rendered = render_file_completion(
+            &ClientType::MySQL,
+            "tests/example.test",
+            Duration::from_millis(42),
+            false,
+        );
+
+        assert_eq!(
+            rendered,
+            "Completed MySQL test for file: tests/example.test ❌ (42ms)"
+        );
+    }
 }
