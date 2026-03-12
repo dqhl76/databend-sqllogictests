@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use sqllogictest::TestError;
 
+use crate::util::format_duration;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct NonDefaultSetting {
     name: String,
@@ -127,13 +129,13 @@ impl RunReport {
         match self.status() {
             RunStatus::NoTestsRun => "⚠️  No tests were run.".to_string(),
             RunStatus::Passed => format!(
-                "✅ Passed, {} test(s) across {} file(s) completed in {} ms.",
+                "✅ Passed, {} test(s) across {} file(s) completed in {}.",
                 self.discovered_tests,
                 self.selected_files,
-                self.duration.as_millis()
+                format_duration(self.duration)
             ),
             RunStatus::Failed => format!(
-                "❌ Failed, {} record(s) across {} file(s); {} discovered test(s); fail fast {}; {} ms.",
+                "❌ Failed, {} record(s) across {} file(s); {} discovered test(s); fail fast {}; {}.",
                 self.error_records.len(),
                 self.failed_files,
                 self.discovered_tests,
@@ -142,7 +144,7 @@ impl RunReport {
                 } else {
                     "enabled"
                 },
-                self.duration.as_millis()
+                format_duration(self.duration)
             ),
         }
     }
@@ -213,6 +215,18 @@ mod tests {
             "Summary: ✅ Passed, 5 test(s) across 2 file(s) completed in 11 ms.\n"
         );
         assert!(!rendered.contains("Failures:"));
+    }
+
+    #[test]
+    fn render_report_for_success_with_seconds() {
+        let report = RunReport::new(1, 3, true, true, Duration::from_millis(1_500), vec![]);
+
+        let rendered = report.render();
+
+        assert_eq!(
+            rendered,
+            "Summary: ✅ Passed, 3 test(s) across 1 file(s) completed in 1.5 s.\n"
+        );
     }
 
     #[test]

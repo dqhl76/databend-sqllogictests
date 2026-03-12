@@ -53,7 +53,13 @@ pub enum ClientType {
 
 impl fmt::Display for ClientType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{self:?}")
+        let display_name = match self {
+            ClientType::MySQL => "MySQL",
+            ClientType::Http => "HTTP",
+            ClientType::Ttc { .. } => "TTC",
+            ClientType::Hybird => "Hybrid",
+        };
+        write!(f, "{display_name}")
     }
 }
 
@@ -113,4 +119,25 @@ fn replace_rand_values(input: &str) -> Cow<'_, str> {
         let rand_value = rng.gen_range(m..n);
         rand_value.to_string()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_type_display_uses_expected_names() {
+        assert_eq!(ClientType::MySQL.to_string(), "MySQL");
+        assert_eq!(ClientType::Http.to_string(), "HTTP");
+        assert_eq!(ClientType::Hybird.to_string(), "Hybrid");
+        assert_eq!(
+            ClientType::Ttc {
+                image: "ghcr.io/databendlabs/ttc-rust:latest".to_string(),
+                port: 9902,
+                query_result_format: QueryResultFormat::Json,
+            }
+            .to_string(),
+            "TTC"
+        );
+    }
 }

@@ -46,6 +46,7 @@ use crate::report::ErrorRecord;
 use crate::report::RunReport;
 use crate::util::ColumnType;
 use crate::util::collect_lazy_dir;
+use crate::util::format_duration;
 use crate::util::get_files;
 use crate::util::lazy_prepare_data;
 use crate::util::lazy_run_dictionary_containers;
@@ -159,12 +160,12 @@ async fn run_mysql_client(args: SqlLogicTestArgs) -> Result<()> {
 }
 
 async fn run_http_client(args: SqlLogicTestArgs) -> Result<()> {
-    println!("Http client starts to run with: {:?}", args);
+    println!("HTTP client starts to run with: {:?}", args);
     run_suits(args, ClientType::Http).await?;
     Ok(())
 }
 async fn run_ttc_client(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()> {
-    println!("Http client starts to run with: {:?}", args);
+    println!("TTC client starts to run with: {:?}", args);
     run_suits(args, client_type).await?;
     Ok(())
 }
@@ -345,9 +346,9 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
         }
         let duration = start.elapsed();
         println!(
-            "Completed updating {} test file(s) in {} ms",
+            "Completed updating {} test file(s) in {}",
             selected_files,
-            duration.as_millis()
+            format_duration(duration)
         );
         return Ok(());
     } else {
@@ -515,8 +516,11 @@ fn render_file_completion(
 ) -> String {
     let status = if passed { "✅" } else { "❌" };
     format!(
-        "Completed {} test for file: {} {} ({:?})",
-        client_type, filename, status, duration
+        "Completed {} test for file: {} {} ({})",
+        client_type,
+        filename,
+        status,
+        format_duration(duration)
     )
 }
 
@@ -535,7 +539,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Completed Http test for file: tests/sqllogictests/suites/tpcds/opt.test ✅ (517ms)"
+            "Completed HTTP test for file: tests/sqllogictests/suites/tpcds/opt.test ✅ (517 ms)"
         );
     }
 
@@ -550,7 +554,26 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Completed MySQL test for file: tests/example.test ❌ (42ms)"
+            "Completed MySQL test for file: tests/example.test ❌ (42 ms)"
+        );
+    }
+
+    #[test]
+    fn render_file_completion_for_ttc_success() {
+        let rendered = render_file_completion(
+            &ClientType::Ttc {
+                image: "ghcr.io/databendlabs/ttc-rust:latest".to_string(),
+                port: 9902,
+                query_result_format: QueryResultFormat::Json,
+            },
+            "tests/example.test",
+            Duration::from_millis(88),
+            true,
+        );
+
+        assert_eq!(
+            rendered,
+            "Completed TTC test for file: tests/example.test ✅ (88 ms)"
         );
     }
 }

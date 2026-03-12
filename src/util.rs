@@ -85,6 +85,43 @@ pub fn parser_rows(rows: &Value) -> Result<Vec<Vec<String>>> {
     Ok(parsed_rows)
 }
 
+pub(crate) fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+
+    if seconds < 0.000_001 {
+        return format_scaled(seconds * 1_000_000_000.0, "ns");
+    }
+    if seconds < 0.001 {
+        return format_scaled(seconds * 1_000_000.0, "us");
+    }
+    if seconds < 1.0 {
+        return format_scaled(seconds * 1_000.0, "ms");
+    }
+    if seconds < 60.0 {
+        return format_scaled(seconds, "s");
+    }
+    if seconds < 3_600.0 {
+        return format_scaled(seconds / 60.0, "min");
+    }
+    if seconds < 86_400.0 {
+        return format_scaled(seconds / 3_600.0, "h");
+    }
+    format_scaled(seconds / 86_400.0, "d")
+}
+
+fn format_scaled(value: f64, unit: &str) -> String {
+    let raw = if value >= 100.0 || value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else if value >= 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.2}")
+    };
+
+    let trimmed = raw.trim_end_matches('0').trim_end_matches('.');
+    format!("{trimmed} {unit}")
+}
+
 fn find_specific_dir(dir: &str, suit: PathBuf) -> Result<DirEntry> {
     for entry in WalkDir::new(suit)
         .min_depth(0)
@@ -140,6 +177,22 @@ pub fn get_files(suit: PathBuf, args: &SqlLogicTestArgs) -> Result<Vec<walkdir::
         files.push(entry);
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_duration_uses_adaptive_units() {
+        assert_eq!(format_duration(Duration::from_nanos(321)), "321 ns");
+        assert_eq!(format_duration(Duration::from_micros(42)), "42 us");
+        assert_eq!(format_duration(Duration::from_millis(517)), "517 ms");
+        assert_eq!(format_duration(Duration::from_millis(1_500)), "1.5 s");
+        assert_eq!(format_duration(Duration::from_secs(90)), "1.5 min");
+        assert_eq!(format_duration(Duration::from_secs(7_200)), "2 h");
+        assert_eq!(format_duration(Duration::from_secs(172_800)), "2 d");
+    }
 }
 
 static PREPARE_TPCH: std::sync::Once = std::sync::Once::new();
