@@ -12,11 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod arg;
-mod client;
-mod diagnostics;
-mod error;
-mod report;
-mod util;
+use clap::Parser;
+use databend_sqllogictests_core::arg::SqlLogicTestArgs;
+use databend_sqllogictests_core::runner::run;
 
-pub mod runner;
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    let args = SqlLogicTestArgs::parse();
+    if let Err(e) = run(args).await {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}

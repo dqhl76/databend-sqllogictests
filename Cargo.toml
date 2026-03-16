@@ -7,9 +7,9 @@ description = "Databend-Sqllogictests is a testing tool to verify the correctnes
 keywords = ["sqllogictest"]
 license = "Apache-2.0"
 
-[lib]
-name = "databend_sqllogictests_core"
-path = "src/lib.rs"
+[[bin]]
+name = "databend-sqllogictests"
+path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1.89"
