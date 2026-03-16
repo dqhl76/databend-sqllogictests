@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::error::Error as StdError;
 use std::io::Error as IOError;
 
 use mysql_async::Error as MysqlClientError;
 use reqwest::Error as HttpClientError;
 use serde_json::Error as SerdeJsonError;
+use sqllogictest::ParseError;
 use sqllogictest::TestError;
 use testcontainers::core::error::ClientError;
 use thiserror::Error;
@@ -29,6 +31,9 @@ pub enum DSqlLogicTestError {
     // Error from sqllogictest-rs
     #[error("SqlLogicTest error(from sqllogictest-rs crate): {0}")]
     SqlLogicTest(#[from] TestError),
+    // Error from sqllogictest parser
+    #[error("SqlLogicTest parse error(from sqllogictest-rs crate): {0}")]
+    SqlLogicParse(#[from] ParseError),
     // Error from mysql client
     #[error("mysql client error: {0}")]
     MysqlClient(#[from] MysqlClientError),
@@ -57,6 +62,12 @@ impl From<String> for DSqlLogicTestError {
 
 impl From<ClientError> for DSqlLogicTestError {
     fn from(value: ClientError) -> Self {
+        DSqlLogicTestError::SelfError(value.to_string())
+    }
+}
+
+impl From<Box<dyn StdError>> for DSqlLogicTestError {
+    fn from(value: Box<dyn StdError>) -> Self {
         DSqlLogicTestError::SelfError(value.to_string())
     }
 }
