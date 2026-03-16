@@ -14,7 +14,6 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,7 +23,6 @@ use bollard::Docker;
 use bollard::container::ListContainersOptions;
 use bollard::container::RemoveContainerOptions;
 use glob::glob;
-use redis::Commands;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -36,9 +34,6 @@ use testcontainers::core::WaitFor;
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::core::logs::consumer::logging_consumer::LoggingConsumer;
 use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::mysql::Mysql;
-use testcontainers_modules::redis::REDIS_PORT;
-use testcontainers_modules::redis::Redis;
 use walkdir::WalkDir;
 
 use crate::arg::SqlLogicTestArgs;
@@ -274,7 +269,6 @@ mod tests {
             enable_sandbox: false,
             debug: false,
             bench: false,
-            force_load: false,
             database: "default".to_string(),
             port: 8000,
         }
@@ -365,106 +359,6 @@ mod tests {
     }
 }
 
-static PREPARE_TPCH: std::sync::Once = std::sync::Once::new();
-static PREPARE_TPCDS: std::sync::Once = std::sync::Once::new();
-static PREPARE_STAGE: std::sync::Once = std::sync::Once::new();
-static PREPARE_WASM: std::sync::Once = std::sync::Once::new();
-
-#[derive(Eq, Hash, PartialEq)]
-pub enum LazyDir {
-    Tpch,
-    Tpcds,
-    Stage,
-    UdfNative,
-    Dictionaries,
-}
-
-pub fn collect_lazy_dir(file_path: &Path, lazy_dirs: &mut HashSet<LazyDir>) -> Result<()> {
-    let file_path = file_path.to_str().unwrap_or_default();
-    if file_path.contains("tpch/") || file_path.contains("tpch_spill/") {
-        if !lazy_dirs.contains(&LazyDir::Tpch) {
-            lazy_dirs.insert(LazyDir::Tpch);
-        }
-    } else if file_path.contains("tpcds/") {
-        if !lazy_dirs.contains(&LazyDir::Tpcds) {
-            lazy_dirs.insert(LazyDir::Tpcds);
-        }
-    } else if file_path.contains("stage/") || file_path.contains("stage_parquet/") {
-        if !lazy_dirs.contains(&LazyDir::Stage) {
-            lazy_dirs.insert(LazyDir::Stage);
-        }
-    } else if file_path.contains("udf_native/") {
-        if !lazy_dirs.contains(&LazyDir::UdfNative) {
-            lazy_dirs.insert(LazyDir::UdfNative);
-        }
-    } else if file_path.contains("dictionaries/") && !lazy_dirs.contains(&LazyDir::Dictionaries) {
-        lazy_dirs.insert(LazyDir::Dictionaries);
-    }
-    Ok(())
-}
-
-pub fn lazy_prepare_data(lazy_dirs: &HashSet<LazyDir>, force_load: bool) -> Result<()> {
-    let force_load_flag = if force_load { "1" } else { "0" };
-    for lazy_dir in lazy_dirs {
-        match lazy_dir {
-            LazyDir::Tpch => {
-                PREPARE_TPCH.call_once(|| {
-                    println!("Calling the script prepare_tpch_data.sh ...");
-                    run_script("prepare_tpch_data.sh", &["tpch_test", force_load_flag]).unwrap();
-                });
-            }
-            LazyDir::Tpcds => {
-                PREPARE_TPCDS.call_once(|| {
-                    println!("Calling the script prepare_tpcds_data.sh ...");
-                    run_script("prepare_tpcds_data.sh", &["tpcds", force_load_flag]).unwrap();
-                });
-            }
-            LazyDir::Stage => {
-                PREPARE_STAGE.call_once(|| {
-                    println!("Calling the script prepare_stage.sh ...");
-                    run_script("prepare_stage.sh", &[]).unwrap();
-                });
-            }
-            LazyDir::UdfNative => {
-                println!("wasm context Calling the script prepare_stage.sh ...");
-                PREPARE_WASM.call_once(|| run_script("prepare_stage.sh", &[]).unwrap())
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn run_script(name: &str, args: &[&str]) -> Result<()> {
-    let path = format!("tests/sqllogictests/scripts/{}", name);
-    let mut new_args = vec![path.as_str()];
-    new_args.extend_from_slice(args);
-
-    let output = std::process::Command::new("bash")
-        .args(new_args)
-        .output()
-        .expect("failed to execute process");
-    if !output.status.success() {
-        return Err(DSqlLogicTestError::SelfError(format!(
-            "Failed to run {}: {}",
-            name,
-            String::from_utf8(output.stderr).unwrap()
-        )));
-    } else {
-        println!(
-            "script stdout:\n {}",
-            String::from_utf8(output.stdout).unwrap()
-        );
-        if !output.stderr.is_empty() {
-            println!(
-                "script stderr:\n {}",
-                String::from_utf8(output.stderr).unwrap()
-            );
-        }
-    }
-    Ok(())
-}
-
 pub async fn run_ttc_container(
     image: &str,
     port: u16,
@@ -532,150 +426,6 @@ pub async fn run_ttc_container(
                     println!(
                         "Retrying to start container {container_name} {i} after {duration} secs",
                     );
-                    i += 1;
-                }
-            }
-        }
-    }
-    Err(format!("Start {container_name} failed").into())
-}
-
-#[allow(dead_code)]
-pub struct DictionaryContainer {
-    pub redis: ContainerAsync<Redis>,
-    pub mysql: ContainerAsync<Mysql>,
-}
-
-pub async fn lazy_run_dictionary_containers(
-    lazy_dirs: &HashSet<LazyDir>,
-) -> Result<Option<DictionaryContainer>> {
-    if !lazy_dirs.contains(&LazyDir::Dictionaries) {
-        return Ok(None);
-    }
-    println!("Start run dictionary source server container");
-    let docker = docker_client_instance().await?;
-    let redis = run_redis_server(&docker).await?;
-    let mysql = run_mysql_server(&docker).await?;
-    let dict_container = DictionaryContainer { redis, mysql };
-
-    Ok(Some(dict_container))
-}
-
-async fn run_redis_server(docker: &Docker) -> Result<ContainerAsync<Redis>> {
-    let start = Instant::now();
-    let container_name = "redis".to_string();
-    println!("Start container {container_name}");
-
-    stop_container(docker, &container_name).await;
-
-    let mut i = 1;
-    loop {
-        let redis_res = Redis::default()
-            .with_network("host")
-            .with_startup_timeout(Duration::from_secs(CONTAINER_STARTUP_TIMEOUT_SECONDS))
-            .with_container_name(&container_name)
-            .start()
-            .await;
-
-        let duration = start.elapsed().as_secs();
-        match redis_res {
-            Ok(redis) => {
-                let host_ip = redis.get_host().await.unwrap();
-                let url = format!("redis://{}:{}", host_ip, REDIS_PORT);
-                let client = redis::Client::open(url.as_ref()).unwrap();
-                let mut con = client.get_connection().unwrap();
-
-                // Add some key values for test.
-                let keys = vec!["a", "b", "c", "1", "2"];
-                for key in keys {
-                    let val = format!("{}_value", key);
-                    con.set::<_, _, ()>(key, val).unwrap();
-                }
-                println!(
-                    "Start container {} using {} secs success",
-                    container_name, duration
-                );
-                return Ok(redis);
-            }
-            Err(err) => {
-                eprintln!(
-                    "Start container {} using {} secs failed: {}",
-                    container_name, duration, err
-                );
-                stop_container(docker, &container_name).await;
-                if i == CONTAINER_RETRY_TIMES || duration >= CONTAINER_TIMEOUT_SECONDS {
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
-        }
-    }
-    Err(format!("Start {container_name} failed").into())
-}
-
-async fn run_mysql_server(docker: &Docker) -> Result<ContainerAsync<Mysql>> {
-    let start = Instant::now();
-    let container_name = "mysql".to_string();
-    println!("Start container {container_name}");
-
-    stop_container(docker, &container_name).await;
-
-    // Add a table for test.
-    // CREATE TABLE test.user(
-    //   id INT,
-    //   name VARCHAR(100),
-    //   age SMALLINT UNSIGNED,
-    //   salary DOUBLE,
-    //   active BOOL
-    // );
-    //
-    // +------+-------+------+---------+--------+
-    // | id   | name  | age  | salary  | active |
-    // +------+-------+------+---------+--------+
-    // |    1 | Alice |   24 |     100 |      1 |
-    // |    2 | Bob   |   35 |   200.1 |      0 |
-    // |    3 | Lily  |   41 |  1000.2 |      1 |
-    // |    4 | Tom   |   55 | 3000.55 |      0 |
-    // |    5 | NULL  | NULL |    NULL |   NULL |
-    // +------+-------+------+---------+--------+
-    let mut i = 1;
-    loop {
-        let mysql_res = Mysql::default()
-            .with_init_sql(
-    "CREATE TABLE test.user(id INT, name VARCHAR(100), age SMALLINT UNSIGNED, salary DOUBLE, active BOOL); \
-    INSERT INTO test.user VALUES \
-    (1, 'Alice', 24, 100, true), \
-    (2, 'Bob', 35, 200.1, false), \
-    (3, 'Lily', 41, 1000.2, true), \
-    (4, 'Tom', 55, 3000.55, false), \
-    (5, NULL, NULL, NULL, NULL);"
-                .to_string()
-                .into_bytes(),
-            )
-            .with_network("host")
-            .with_startup_timeout(Duration::from_secs(CONTAINER_STARTUP_TIMEOUT_SECONDS))
-            .with_container_name(&container_name)
-            .start().await;
-
-        let duration = start.elapsed().as_secs();
-        match mysql_res {
-            Ok(mysql) => {
-                println!(
-                    "Start container {} using {} secs success",
-                    container_name, duration
-                );
-                return Ok(mysql);
-            }
-            Err(err) => {
-                eprintln!(
-                    "Start container {} using {} secs failed: {}",
-                    container_name, duration, err
-                );
-                stop_container(docker, &container_name).await;
-                if i == CONTAINER_RETRY_TIMES || duration >= CONTAINER_TIMEOUT_SECONDS {
-                    break;
-                } else {
                     i += 1;
                 }
             }

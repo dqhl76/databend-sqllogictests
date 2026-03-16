@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
@@ -46,10 +45,7 @@ use crate::report::ErrorRecord;
 use crate::report::RunReport;
 use crate::util::ColumnType;
 use crate::util::collect_files;
-use crate::util::collect_lazy_dir;
 use crate::util::format_duration;
-use crate::util::lazy_prepare_data;
-use crate::util::lazy_run_dictionary_containers;
 use crate::util::run_ttc_container;
 const HANDLER_MYSQL: &str = "mysql";
 const HANDLER_HTTP: &str = "http";
@@ -284,7 +280,6 @@ async fn create_databend(
 async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()> {
     // Todo: set validator to process regex
     let mut num_of_tests = 0;
-    let mut lazy_dirs = HashSet::new();
     let mut files = vec![];
     let start = Instant::now();
     for suit_file in collect_files(&args)?.into_iter() {
@@ -304,18 +299,9 @@ async fn run_suits(args: SqlLogicTestArgs, client_type: ClientType) -> Result<()
             continue;
         }
         num_of_tests += parse_file::<ColumnType>(&suit_file)?.len();
-
-        collect_lazy_dir(&suit_file, &mut lazy_dirs)?;
         files.push(suit_file);
     }
     let selected_files = files.len();
-
-    if !args.bench {
-        // lazy load test data
-        lazy_prepare_data(&lazy_dirs, args.force_load)?;
-    }
-    // lazy run dictionaries containers
-    let _dict_container = lazy_run_dictionary_containers(&lazy_dirs).await?;
 
     if args.complete {
         for file in files {
